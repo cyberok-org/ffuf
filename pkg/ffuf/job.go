@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -22,7 +23,7 @@ type Job struct {
 	Scraper              Scraper
 	Output               OutputProvider
 	Jobhash              string
-	Counter              int
+	Counter              atomic.Int64
 	ErrorCounter         int
 	SpuriousErrorCounter int
 	Total                int
@@ -52,7 +53,7 @@ type QueueJob struct {
 func NewJob(conf *Config) *Job {
 	var j Job
 	j.Config = conf
-	j.Counter = 0
+	j.Counter.Store(0)
 	j.ErrorCounter = 0
 	j.SpuriousErrorCounter = 0
 	j.Running = false
@@ -154,7 +155,7 @@ func (j *Job) Start() {
 // Reset resets the counters and wordlist position for a job
 func (j *Job) Reset(cycle bool) {
 	j.Input.Reset()
-	j.Counter = 0
+	j.Counter.Store(0)
 	j.skipQueue = false
 	j.startTimeJob = time.Now()
 	if cycle {
@@ -263,7 +264,7 @@ func (j *Job) startExecution() {
 		nextInput["FFUFHASH"] = j.ffufHash(nextPosition)
 
 		wg.Add(1)
-		j.Counter++
+		j.Counter.Add(1)
 
 		go func() {
 			defer func() { <-threadlimiter }()
@@ -301,14 +302,14 @@ func (j *Job) interruptMonitor() {
 
 func (j *Job) runBackgroundTasks(wg *sync.WaitGroup) {
 	defer wg.Done()
-	totalProgress := j.Input.Total()
-	for j.Counter <= totalProgress && !j.skipQueue {
+	totalProgress := int64(j.Input.Total())
+	for j.Counter.Load() <= totalProgress && !j.skipQueue {
 		j.pauseWg.Wait()
 		if !j.Running {
 			break
 		}
 		j.updateProgress()
-		if j.Counter == totalProgress {
+		if j.Counter.Load() == totalProgress {
 			return
 		}
 		if !j.RunningJob {
@@ -321,7 +322,7 @@ func (j *Job) runBackgroundTasks(wg *sync.WaitGroup) {
 func (j *Job) updateProgress() {
 	prog := Progress{
 		StartedAt:  j.startTimeJob,
-		ReqCount:   j.Counter,
+		ReqCount:   int(j.Counter.Load()),
 		ReqTotal:   j.Input.Total(),
 		ReqSec:     j.Rate.CurrentRate(),
 		QueuePos:   j.queuepos,
@@ -561,10 +562,10 @@ func (j *Job) handleDefaultRecursionJob(resp Response) {
 
 // CheckStop stops the job if stopping conditions are met
 func (j *Job) CheckStop() {
-	if j.Counter > 50 {
+	if j.Counter.Load() > 50 {
 		// We have enough samples
 		if j.Config.StopOn403 || j.Config.StopOnAll {
-			if float64(j.Count403)/float64(j.Counter) > 0.95 {
+			if float64(j.Count403)/float64(j.Counter.Load()) > 0.95 {
 				// Over 95% of requests are 403
 				j.Error = "Getting an unusual amount of 403 responses, exiting."
 				j.Stop()
@@ -578,7 +579,7 @@ func (j *Job) CheckStop() {
 			}
 
 		}
-		if j.Config.StopOnAll && (float64(j.Count429)/float64(j.Counter) > 0.2) {
+		if j.Config.StopOnAll && (float64(j.Count429)/float64(j.Counter.Load()) > 0.2) {
 			// Over 20% of responses are 429
 			j.Error = "Getting an unusual amount of 429 responses, exiting."
 			j.Stop()
