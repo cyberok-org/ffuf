@@ -34,6 +34,7 @@ func NewRateThrottle(conf *Config) *RateThrottle {
 
 // CurrentRate calculates requests/second value from circular list of rate
 func (r *RateThrottle) CurrentRate() int64 {
+	r.RateMutex.Lock()
 	n := r.rateCounter.Len()
 	lowest := int64(0)
 	highest := int64(0)
@@ -52,6 +53,7 @@ func (r *RateThrottle) CurrentRate() int64 {
 			n -= 1
 		}
 	})
+	r.RateMutex.Unlock()
 
 	earliest := time.UnixMicro(lowest)
 	latest := time.UnixMicro(highest)
